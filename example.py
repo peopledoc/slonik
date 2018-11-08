@@ -14,5 +14,7 @@ if __name__ == '__main__':
     conn = Connection(f'postgresql://{pguser}:{pgpass}@{pghost}:{pgport}/{pgdb}?{pgopts}')
 
     result = conn.get_one('SELECT 42')
-
     print(result)
+
+    for result in conn.query('SELECT generate_series(1, 10)'):
+        print(result)

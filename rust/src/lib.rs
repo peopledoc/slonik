@@ -13,6 +13,17 @@ pub struct _Connection;
 #[no_mangle]
 pub struct _Rows;
 
+#[no_mangle]
+pub struct _RowsIterator;
+
+#[no_mangle]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Row<T> {
+    pub valid: bool,
+    pub value: T,
+}
+
 
 #[no_mangle]
 pub unsafe extern "C" fn connect(dsn: *const c_char, len: usize) -> *mut _Connection {
@@ -33,8 +44,19 @@ pub unsafe extern "C" fn query(conn: *mut _Connection, query: *const c_char, len
 
 
 #[no_mangle]
-pub unsafe extern "C" fn next_row<'a>(rows: *mut _Rows) -> i32 {
+pub unsafe extern "C" fn rows_iterator(rows: *mut _Rows) -> *mut _RowsIterator {
     let rows = rows as *mut Rows;
-    let mut iter = (*rows).iter();
-    iter.next().unwrap().get(0)
+    let iter = (*rows).iter();
+    let ptr = Box::new(iter);
+    Box::into_raw(ptr) as *mut _RowsIterator
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn next_row(iter: *mut _RowsIterator) -> Row<i32> {
+    let iter = iter as *mut postgres::rows::Iter;
+    match (*iter).next() {
+        Some(x) => Row{valid: true, value: x.get(0)},
+        None => Row{valid: false, value: 0},
+    }
 }

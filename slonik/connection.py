@@ -22,8 +22,13 @@ class _Conn(rust.RustObject):
     def query(self, sql: str):
         sql = sql.encode('utf-8')
         rows = self._methodcall(lib.query, sql, len(sql))
+        rows_iter = rust.call(lib.rows_iterator, rows)
 
-        return [rust.call(lib.next_row, rows)]
+        while True:
+            row = rust.call(lib.next_row, rows_iter)
+            if not row.valid:
+                break
+            yield row.value
 
 
 class Connection():
