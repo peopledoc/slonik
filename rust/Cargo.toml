@@ -1,0 +1,14 @@
+[package]
+name = "postgres-ffi"
+version = "0.0.1"
+build = "build.rs"
+
+[lib]
+name = "postgres_ffi"
+crate-type = ["cdylib"]
+
+[dependencies]
+postgres = "*"
+
+[build-dependencies]
+cbindgen = "*"
