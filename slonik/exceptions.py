@@ -1,0 +1,2 @@
+class SlonikException(Exception):
+    pass
