@@ -1,3 +1,4 @@
+import struct
 from typing import Iterable
 
 from slonik import rust
@@ -10,6 +11,19 @@ class Row():
         self._row = row
 
 
+def buff_to_bytes(buff):
+    if not buff.bytes:
+        return None
+    return bytes(buff.bytes[0:buff.size])
+
+def converter(fmt):
+    fmt = '>' + fmt
+    def unpack(value):
+        ret, = struct.unpack(fmt, value)
+        return ret
+    return unpack
+
+
 class _Conn(rust.RustObject):
 
     @classmethod
@@ -19,6 +33,12 @@ class _Conn(rust.RustObject):
 
         return rv
 
+    types = {
+        b'int4': converter('i'),
+        b'float8': converter('d'),
+        b'text': lambda value: value.decode(),
+    }
+
     def query(self, sql: str):
         sql = sql.encode('utf-8')
         rows = self._methodcall(lib.query, sql, len(sql))
@@ -26,9 +46,16 @@ class _Conn(rust.RustObject):
 
         while True:
             row = rust.call(lib.next_row, rows_iter)
-            if not row.valid:
+            typename = buff_to_bytes(row.typename)
+            if typename is None:
                 break
-            yield row.value
+
+            value = buff_to_bytes(row.value)
+            type_ = self.types.get(typename)
+            if type_ is not None:
+                value = type_(value)
+
+            yield value
 
 
 class Connection():

@@ -16,5 +16,18 @@ if __name__ == '__main__':
     result = conn.get_one('SELECT 42')
     print(result)
 
+    result = conn.get_one('SELECT 2147483647')
+    print(result)
+
+    result = conn.get_one("SELECT 'foo bar'")
+    print(result)
+    result = conn.get_one("SELECT 'foo bar'::text")
+    print(result)
+
+    result = conn.get_one('SELECT 42.4')
+    print(result)
+    result = conn.get_one('SELECT 42.4::float')
+    print(result)
+
     for result in conn.query('SELECT generate_series(1, 10)'):
         print(result)
