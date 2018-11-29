@@ -1,4 +1,6 @@
+import json
 import struct
+import uuid
 from typing import Iterable
 
 from slonik import rust
@@ -37,6 +39,8 @@ class _Conn(rust.RustObject):
         b'int4': converter('i'),
         b'float8': converter('d'),
         b'text': lambda value: value.decode(),
+        b'json': json.loads,
+        b'uuid': lambda value: uuid.UUID(bytes=value),
     }
 
     def query(self, sql: str):
