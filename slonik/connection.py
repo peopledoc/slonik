@@ -1,4 +1,5 @@
 import json
+import os
 import struct
 import uuid
 from typing import Iterable
@@ -18,11 +19,14 @@ def buff_to_bytes(buff):
         return None
     return bytes(buff.bytes[0:buff.size])
 
+
 def converter(fmt):
     fmt = '>' + fmt
+
     def unpack(value):
         ret, = struct.unpack(fmt, value)
         return ret
+
     return unpack
 
 
@@ -67,6 +71,23 @@ class Connection():
     def __init__(self, dsn: str):
         self.dsn = dsn
         self.__conn = None
+
+    @classmethod
+    def from_env(cls, pghost: str = '', pgport: str = '', pguser: str = '',
+                 pgpassword: str = '', pgdatabase: str = '',
+                 pgoptions: str = ''):
+        pghost = pghost or os.environ.get('PGHOST', 'localhost')
+        pgport = pgport or os.environ.get('PGPORT', '5432')
+        pguser = pguser or os.environ.get('PGUSER', 'postgres')
+        pgpassword = pgpassword or os.environ.get('PGPASSWORD', 'postgres')
+        pgdatabase = pgdatabase or os.environ.get('PGDATABASE', 'postgres')
+        pgoptions = pgoptions or os.environ.get('PGOPTIONS', '')
+
+        dsn = (
+            f'postgresql://{pguser}:{pgpassword}@{pghost}:{pgport}'
+            f'/{pgdatabase}?{pgoptions}'
+        )
+        return cls(dsn)
 
     @property
     def _conn(self):
