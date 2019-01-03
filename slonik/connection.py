@@ -1,3 +1,6 @@
+import json
+import struct
+import uuid
 from typing import Iterable
 
 from slonik import rust
@@ -10,6 +13,19 @@ class Row():
         self._row = row
 
 
+def buff_to_bytes(buff):
+    if not buff.bytes:
+        return None
+    return bytes(buff.bytes[0:buff.size])
+
+def converter(fmt):
+    fmt = '>' + fmt
+    def unpack(value):
+        ret, = struct.unpack(fmt, value)
+        return ret
+    return unpack
+
+
 class _Conn(rust.RustObject):
 
     @classmethod
@@ -19,11 +35,31 @@ class _Conn(rust.RustObject):
 
         return rv
 
+    types = {
+        b'int4': converter('i'),
+        b'float8': converter('d'),
+        b'text': lambda value: value.decode(),
+        b'json': json.loads,
+        b'uuid': lambda value: uuid.UUID(bytes=value),
+    }
+
     def query(self, sql: str):
         sql = sql.encode('utf-8')
         rows = self._methodcall(lib.query, sql, len(sql))
+        rows_iter = rust.call(lib.rows_iterator, rows)
 
-        return [rust.call(lib.next_row, rows)]
+        while True:
+            row = rust.call(lib.next_row, rows_iter)
+            typename = buff_to_bytes(row.typename)
+            if typename is None:
+                break
+
+            value = buff_to_bytes(row.value)
+            type_ = self.types.get(typename)
+            if type_ is not None:
+                value = type_(value)
+
+            yield value
 
 
 class Connection():
