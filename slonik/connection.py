@@ -41,6 +41,7 @@ class _Conn(rust.RustObject):
 
     types = {
         b'int4': converter('i'),
+        b'int8': converter('q'),
         b'float8': converter('d'),
         b'text': lambda value: value.decode(),
         b'bpchar': lambda value: value.decode(),
