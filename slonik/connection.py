@@ -43,7 +43,10 @@ class _Conn(rust.RustObject):
         b'int4': converter('i'),
         b'float8': converter('d'),
         b'text': lambda value: value.decode(),
+        b'bpchar': lambda value: value.decode(),
+        b'varchar': lambda value: value.decode(),
         b'json': json.loads,
+        b'jsonb': lambda value: json.loads(value[1:]),  # always start with '1'
         b'uuid': lambda value: uuid.UUID(bytes=value),
     }
 
