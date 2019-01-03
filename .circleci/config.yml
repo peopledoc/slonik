@@ -1,0 +1,79 @@
+version: 2
+jobs:
+
+  setup:
+    docker:
+      - image: circleci/python:3.7
+    steps: &steps
+      - checkout
+      - run:
+          name: Install latest version of Rust compiler
+          command: |
+            curl https://sh.rustup.rs -sSf | sh -s -- -y
+      - run:
+          name: Install Python deps in a venv
+          command: |
+            export PATH="${HOME}/.cargo/bin:${PATH}"
+            python3 -m venv venv
+            . venv/bin/activate
+            pip install -e .[tests]
+      - save_cache:
+          key: deps-{{ .Revision }}
+          paths:
+            - "venv"
+            - "slonik/_native.py"
+            - "slonik/_native__ffi.py"
+            - "slonik/_native__lib.so"
+
+  tests-pg9.6:
+    docker:
+      - image: circleci/python:3.7
+        environment:
+          PGHOST: localhost
+      - image: circleci/postgres:9.6
+        environment:
+          POSTGRES_USER: postgres
+    steps: &steps
+      - checkout
+      - restore_cache:
+          key: deps-{{ .Revision }}
+      - run:
+          name: Run the tests
+          command: |
+            . venv/bin/activate
+            pytest -vv
+
+  tests-pg10:
+    docker:
+      - image: circleci/python:3.7
+        environment:
+          PGHOST: localhost
+      - image: circleci/postgres:10
+        environment:
+          POSTGRES_USER: postgres
+    steps: *steps
+
+  tests-pg11:
+    docker:
+      - image: circleci/python:3.7
+        environment:
+          PGHOST: localhost
+      - image: circleci/postgres:11
+        environment:
+          POSTGRES_USER: postgres
+    steps: *steps
+
+workflows:
+  version: 2
+  tests:
+    jobs:
+      - setup
+      - tests-pg9.6:
+          requires:
+            - setup
+      - tests-pg10:
+          requires:
+            - setup
+      - tests-pg11:
+          requires:
+            - setup
