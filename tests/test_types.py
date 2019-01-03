@@ -11,6 +11,12 @@ def test_int(conn):
     assert conn.get_one("SELECT 0") == 0
 
 
+def test_smallint(conn):
+    assert conn.get_one('SELECT 42::smallint') == 42
+    assert conn.get_one("SELECT '-21'::smallint") == -21
+    assert conn.get_one("SELECT 0::smallint") == 0
+
+
 def test_bigint(conn):
     assert conn.get_one('SELECT 2147483648') == 2147483648
     assert conn.get_one('SELECT 9223372036854775807') == 9223372036854775807

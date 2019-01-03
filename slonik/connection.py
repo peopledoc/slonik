@@ -40,6 +40,7 @@ class _Conn(rust.RustObject):
         return rv
 
     types = {
+        b'int2': converter('h'),
         b'int4': converter('i'),
         b'int8': converter('q'),
         b'float8': converter('d'),
