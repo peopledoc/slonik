@@ -30,6 +30,10 @@ def converter(fmt):
     return unpack
 
 
+class _Query(rust.RustObject):
+    pass
+
+
 class _Conn(rust.RustObject):
 
     @classmethod
@@ -53,9 +57,20 @@ class _Conn(rust.RustObject):
         b'uuid': lambda value: uuid.UUID(bytes=value),
     }
 
-    def query(self, sql: str):
+    def query(self, sql: str, *args):
         sql = sql.encode('utf-8')
-        rows = self._methodcall(lib.query, sql, len(sql))
+
+        query = self._methodcall(lib.new_query, sql, len(sql))
+        query = _Query._from_objptr(query)
+
+        for arg in args:
+            from slonik._native import ffi
+            import struct
+            t = ffi.from_buffer(b'int4')
+            p = ffi.from_buffer(struct.pack('>i', 42))
+            query._methodcall(lib.query_param, ((len(t), t), (len(p), p)))
+
+        rows = query._methodcall(lib.query_exec)
         rows_iter = rust.call(lib.rows_iterator, rows)
 
         while True:
@@ -102,11 +117,11 @@ class Connection():
 
         return self.__conn
 
-    def query(self, sql: str) -> Iterable[Row]:
-        _rows = self._conn.query(sql)
+    def query(self, sql: str, *args) -> Iterable[Row]:
+        _rows = self._conn.query(sql, *args)
 
         for row in _rows:
             yield row
 
-    def get_one(self, sql: str) -> Row:
-        return next(self.query(sql))
+    def get_one(self, sql: str, *args) -> Row:
+        return next(self.query(sql, *args))

@@ -11,6 +11,9 @@ use postgres::rows::{Rows};
 pub struct _Connection;
 
 #[no_mangle]
+pub struct _Query;
+
+#[no_mangle]
 pub struct _Rows;
 
 #[no_mangle]
@@ -18,7 +21,7 @@ pub struct _RowsIterator;
 
 #[no_mangle]
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Buffer {
     pub size: usize,
     pub bytes: *const u8,
@@ -33,6 +36,9 @@ impl Buffer {
     }
     pub fn from_str(data: &str) -> Self {
         Self::from_bytes(data.as_bytes())
+    }
+    pub unsafe fn to_str(&self) -> &str {
+        str::from_utf8_unchecked(slice::from_raw_parts(self.bytes as *const _, self.size))
     }
 }
 
@@ -51,6 +57,32 @@ impl Row {
     }
 }
 
+#[no_mangle]
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct QueryParam {
+    pub typename: Buffer,
+    pub value: Buffer,
+}
+
+impl postgres::types::ToSql for QueryParam {
+    fn to_sql(&self, ty: &postgres::types::Type, out: &mut Vec<u8>) -> Result<postgres::types::IsNull, Box<std::error::Error + 'static + Send + Sync>> {
+        Ok(postgres::types::IsNull::Yes)
+    }
+
+    fn accepts(ty: &postgres::types::Type) -> bool {
+        true
+    }
+
+    postgres::to_sql_checked!();
+}
+
+pub struct Query {
+    pub conn: *mut Connection,
+    pub query: String,
+    pub params: Vec<QueryParam>,
+}
+
 
 #[no_mangle]
 pub unsafe extern "C" fn connect(dsn: *const c_char, len: usize) -> *mut _Connection {
@@ -62,11 +94,29 @@ pub unsafe extern "C" fn connect(dsn: *const c_char, len: usize) -> *mut _Connec
 
 
 #[no_mangle]
-pub unsafe extern "C" fn query(conn: *mut _Connection, query: *const c_char, len: usize) -> *mut _Rows {
+pub unsafe extern "C" fn new_query(conn: *mut _Connection, query: *const c_char, len: usize) -> *mut _Query {
     let conn = conn as *mut Connection;
     let query_str = str::from_utf8_unchecked(slice::from_raw_parts(query as *const _, len));
-    let ptr = Box::new((*conn).query(query_str, &[]).unwrap());
+    let q = Query { conn: conn, query: query_str.to_string(), params: vec![] };
+    let ptr = Box::new(q);
+    Box::into_raw(ptr) as *mut _Query
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn query_exec(query: *const _Query) -> *mut _Rows {
+    let query = &*(query as *const Query);
+    println!("query.params = {:?}", query.params);
+    let conn = &*query.conn;
+    let ptr = Box::new(conn.query(&query.query, &[]).unwrap());
     Box::into_raw(ptr) as *mut _Rows
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn query_param(query: *mut _Query, param: QueryParam) {
+    let query = &mut *(query as *mut Query);
+    query.params.push(param);
 }
 
 
