@@ -111,7 +111,26 @@ pub unsafe extern "C" fn new_query(conn: *mut _Connection, query: *const c_char,
 
 
 #[no_mangle]
-pub unsafe extern "C" fn query_exec(query: *const _Query) -> *mut _Rows {
+pub unsafe extern "C" fn query_param(query: *mut _Query, param: QueryParam) {
+    let query = &mut *(query as *mut Query);
+    query.params.push(param);
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn query_exec(query: *const _Query) {
+    let query = &*(query as *const Query);
+    let conn = &*query.conn;
+    let mut params: Vec<&postgres::types::ToSql> = vec![];
+    for param in &query.params {
+        params.push(*Box::new(param));
+    }
+    conn.execute(&query.query, params.as_slice());
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn query_exec_result(query: *const _Query) -> *mut _Rows {
     let query = &*(query as *const Query);
     let conn = &*query.conn;
     let mut params: Vec<&postgres::types::ToSql> = vec![];
@@ -120,13 +139,6 @@ pub unsafe extern "C" fn query_exec(query: *const _Query) -> *mut _Rows {
     }
     let ptr = Box::new(conn.query(&query.query, params.as_slice()).unwrap());
     Box::into_raw(ptr) as *mut _Rows
-}
-
-
-#[no_mangle]
-pub unsafe extern "C" fn query_param(query: *mut _Query, param: QueryParam) {
-    let query = &mut *(query as *mut Query);
-    query.params.push(param);
 }
 
 

@@ -4,15 +4,11 @@ import struct
 import uuid
 from typing import Any
 from typing import Iterable
+from typing import Tuple
 
 from slonik import rust
+from slonik._native import ffi
 from slonik._native import lib
-
-
-class Row():
-
-    def __init__(self, row):
-        self._row = row
 
 
 def buff_to_bytes(buff):
@@ -32,6 +28,10 @@ def converter(fmt):
 
 
 class _Query(rust.RustObject):
+    pass
+
+
+class _Row(rust.RustObject):
     pass
 
 
@@ -58,8 +58,7 @@ class _Conn(rust.RustObject):
         b'uuid': lambda value: uuid.UUID(bytes=value),
     }
 
-    def query(self, sql: str, *args):
-        from slonik._native import ffi
+    def _prepare_query(self, sql: str, *args) -> _Query:
         sql = sql.encode('utf-8')
 
         query = self._methodcall(lib.new_query, sql, len(sql))
@@ -75,11 +74,19 @@ class _Conn(rust.RustObject):
                 p = ffi.from_buffer(arg.encode())
             query._methodcall(lib.query_param, ((len(t), t), (len(p), p)))
 
-        rows = query._methodcall(lib.query_exec)
+        return query
+
+    def execute(self, sql: str, *args):
+        query = self._prepare_query(sql, *args)
+        query._methodcall(lib.query_exec)
+
+    def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
+        query = self._prepare_query(sql, *args)
+        rows = query._methodcall(lib.query_exec_result)
         rows_iter = rust.call(lib.rows_iterator, rows)
 
         def _get_row_item(row, i):
-            item = rust.call(lib.row_item, row, i)
+            item = row._methodcall(lib.row_item, i)
             typename = buff_to_bytes(item.typename)
             if typename is None:
                 return
@@ -97,9 +104,10 @@ class _Conn(rust.RustObject):
             if row == ffi.NULL:
                 break
 
+            row = _Row._from_objptr(row)
             yield tuple(
                 _get_row_item(row, i)
-                for i in range(rust.call(lib.row_len, row))
+                for i in range(row._methodcall(lib.row_len))
             )
 
 
@@ -133,13 +141,16 @@ class Connection():
 
         return self.__conn
 
-    def query(self, sql: str, *args) -> Iterable[Row]:
+    def execute(self, sql: str, *args):
+        _rows = self._conn.execute(sql, *args)
+
+    def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
         _rows = self._conn.query(sql, *args)
 
         for row in _rows:
             yield row
 
-    def get_one(self, sql: str, *args) -> Row:
+    def get_one(self, sql: str, *args) -> Tuple[Any]:
         return next(self.query(sql, *args))
 
     def get_value(self, sql: str, *args) -> Any:

@@ -40,16 +40,12 @@ if __name__ == '__main__':
 
     #####
 
-    # Add conn.execute
-    def execute(query, *args):
-        for _ in conn.query(query, *args): pass
-
-    execute('BEGIN')
-    execute('DROP TABLE IF exists toto')
-    execute('CREATE TABLE toto(value text, sum int)')
+    conn.execute('BEGIN')
+    conn.execute('DROP TABLE IF exists toto')
+    conn.execute('CREATE TABLE toto(value text, sum int)')
     print(list(conn.query('SELECT * FROM toto')))
-    execute('INSERT INTO toto(value, sum) VALUES ($1, $2)', 'salut', 15)
-    execute('INSERT INTO toto(value, sum) VALUES ($1, $2)', 'oki', 32)
-    execute('INSERT INTO toto(value) VALUES ($1)', 'pouet')
+    conn.execute('INSERT INTO toto(value, sum) VALUES ($1, $2)', 'salut', 15)
+    conn.execute('INSERT INTO toto(value, sum) VALUES ($1, $2)', 'oki', 32)
+    conn.execute('INSERT INTO toto(value) VALUES ($1)', 'pouet')
     print(list(conn.query('SELECT * FROM toto')))
-    execute('ROLLBACK')
+    conn.execute('ROLLBACK')
