@@ -20,6 +20,9 @@ pub struct _Rows;
 pub struct _RowsIterator;
 
 #[no_mangle]
+pub struct _Row;
+
+#[no_mangle]
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Buffer {
@@ -45,12 +48,12 @@ impl Buffer {
 #[no_mangle]
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct Row {
+pub struct RowItem {
     pub typename: Buffer,
     pub value: Buffer,
 }
 
-impl Row {
+impl RowItem {
     pub fn empty() -> Self {
         let buff = Buffer::null();
         Self{typename: buff, value: buff}
@@ -110,7 +113,6 @@ pub unsafe extern "C" fn new_query(conn: *mut _Connection, query: *const c_char,
 #[no_mangle]
 pub unsafe extern "C" fn query_exec(query: *const _Query) -> *mut _Rows {
     let query = &*(query as *const Query);
-    println!("query.params = {:?}", query.params);
     let conn = &*query.conn;
     let mut params: Vec<&postgres::types::ToSql> = vec![];
     for param in &query.params {
@@ -138,18 +140,35 @@ pub unsafe extern "C" fn rows_iterator(rows: *mut _Rows) -> *mut _RowsIterator {
 
 
 #[no_mangle]
-pub unsafe extern "C" fn next_row(iter: *mut _RowsIterator) -> Row {
+pub unsafe extern "C" fn next_row(iter: *mut _RowsIterator) -> *const _Row {
     let iter = iter as *mut postgres::rows::Iter;
     match (*iter).next() {
         Some(x) => {
-            let typename = x.columns()[0].type_().name();
-            // + handle None case
-            let data = x.get_bytes(0).unwrap();
-            Row{
-                typename: Buffer::from_str(typename),
-                value: Buffer::from_bytes(data),
-            }
+            let ptr = Box::new(x);
+            Box::into_raw(ptr) as *const _Row
         }
-        None => Row::empty(),
+        None => std::ptr::null(),
+    }
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn row_len(row: *const _Row) -> usize {
+    let row = row as *const postgres::rows::Row;
+    (*row).len()
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn row_item(row: *const _Row, i: usize) -> RowItem {
+    let row = row as *const postgres::rows::Row;
+    let typename = (*row).columns()[i].type_().name();
+
+    match (*row).get_bytes(i) {
+        Some(data) => RowItem{
+            typename: Buffer::from_str(typename),
+            value: Buffer::from_bytes(data),
+        },
+        None => RowItem::empty(),
     }
 }

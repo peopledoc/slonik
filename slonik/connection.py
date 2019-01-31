@@ -2,6 +2,7 @@ import json
 import os
 import struct
 import uuid
+from typing import Any
 from typing import Iterable
 
 from slonik import rust
@@ -58,13 +59,13 @@ class _Conn(rust.RustObject):
     }
 
     def query(self, sql: str, *args):
+        from slonik._native import ffi
         sql = sql.encode('utf-8')
 
         query = self._methodcall(lib.new_query, sql, len(sql))
         query = _Query._from_objptr(query)
 
         for arg in args:
-            from slonik._native import ffi
             import struct
             if isinstance(arg, int):
                 t = ffi.from_buffer(b'int4')
@@ -77,18 +78,29 @@ class _Conn(rust.RustObject):
         rows = query._methodcall(lib.query_exec)
         rows_iter = rust.call(lib.rows_iterator, rows)
 
-        while True:
-            row = rust.call(lib.next_row, rows_iter)
-            typename = buff_to_bytes(row.typename)
+        def _get_row_item(row, i):
+            item = rust.call(lib.row_item, row, i)
+            typename = buff_to_bytes(item.typename)
             if typename is None:
-                break
+                return
 
-            value = buff_to_bytes(row.value)
+            value = buff_to_bytes(item.value)
             type_ = self.types.get(typename)
             if type_ is not None:
                 value = type_(value)
 
-            yield value
+            return value
+
+        while True:
+            # Use RustObject for row
+            row = rust.call(lib.next_row, rows_iter)
+            if row == ffi.NULL:
+                break
+
+            yield tuple(
+                _get_row_item(row, i)
+                for i in range(rust.call(lib.row_len, row))
+            )
 
 
 class Connection():
@@ -129,3 +141,7 @@ class Connection():
 
     def get_one(self, sql: str, *args) -> Row:
         return next(self.query(sql, *args))
+
+    def get_value(self, sql: str, *args) -> Any:
+        value, = self.get_one(sql, *args)
+        return value
