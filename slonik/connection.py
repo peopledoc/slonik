@@ -66,8 +66,12 @@ class _Conn(rust.RustObject):
         for arg in args:
             from slonik._native import ffi
             import struct
-            t = ffi.from_buffer(b'int4')
-            p = ffi.from_buffer(struct.pack('>i', 42))
+            if isinstance(arg, int):
+                t = ffi.from_buffer(b'int4')
+                p = ffi.from_buffer(struct.pack('>i', arg))
+            elif isinstance(arg, str):
+                t = ffi.from_buffer(b'text')
+                p = ffi.from_buffer(arg.encode())
             query._methodcall(lib.query_param, ((len(t), t), (len(p), p)))
 
         rows = query._methodcall(lib.query_exec)

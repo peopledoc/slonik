@@ -67,10 +67,14 @@ pub struct QueryParam {
 
 impl postgres::types::ToSql for QueryParam {
     fn to_sql(&self, ty: &postgres::types::Type, out: &mut Vec<u8>) -> Result<postgres::types::IsNull, Box<std::error::Error + 'static + Send + Sync>> {
-        Ok(postgres::types::IsNull::Yes)
+        for i in 0..self.value.size {
+            out.push(unsafe { *self.value.bytes.offset(i as isize) });
+        }
+        Ok(postgres::types::IsNull::No)
     }
 
     fn accepts(ty: &postgres::types::Type) -> bool {
+        //ty.name() == "int4"
         true
     }
 
@@ -108,7 +112,11 @@ pub unsafe extern "C" fn query_exec(query: *const _Query) -> *mut _Rows {
     let query = &*(query as *const Query);
     println!("query.params = {:?}", query.params);
     let conn = &*query.conn;
-    let ptr = Box::new(conn.query(&query.query, &[]).unwrap());
+    let mut params: Vec<&postgres::types::ToSql> = vec![];
+    for param in &query.params {
+        params.push(*Box::new(param));
+    }
+    let ptr = Box::new(conn.query(&query.query, params.as_slice()).unwrap());
     Box::into_raw(ptr) as *mut _Rows
 }
 
@@ -135,6 +143,7 @@ pub unsafe extern "C" fn next_row(iter: *mut _RowsIterator) -> Row {
     match (*iter).next() {
         Some(x) => {
             let typename = x.columns()[0].type_().name();
+            // + handle None case
             let data = x.get_bytes(0).unwrap();
             Row{
                 typename: Buffer::from_str(typename),

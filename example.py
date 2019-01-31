@@ -4,9 +4,6 @@ from slonik import Connection
 if __name__ == '__main__':
     conn = Connection.from_env()
 
-    result = conn.get_one('SELECT 42', 'abc')
-    print(repr(result))
-
     result = conn.get_one('SELECT 42')
     print(repr(result))
 
@@ -31,3 +28,9 @@ if __name__ == '__main__':
 
     for result in conn.query('SELECT generate_series(1, 10)'):
         print(repr(result))
+
+    result = conn.get_one('SELECT $1::int+$2', 42, 8)
+    print(repr(result))
+
+    result = conn.get_one('SELECT $1::text', 'abc')
+    print(repr(result))
