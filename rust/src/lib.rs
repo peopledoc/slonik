@@ -23,6 +23,55 @@ pub struct _RowsIterator;
 pub struct _Row;
 
 #[no_mangle]
+pub struct _Opaque;
+
+pub struct OpaquePtr<T> {
+    ptr: *mut T
+}
+impl<T> OpaquePtr<T> {
+    pub fn from_ptr(ptr: *mut T) -> Self {
+        Self { ptr }
+    }
+    pub fn from_box(boxed_value: Box<T>) -> Self {
+        Self::from_ptr(Box::into_raw(boxed_value))
+    }
+    pub fn new(value: T) -> Self {
+        Self::from_box(Box::new(value))
+    }
+    pub unsafe fn free(&self) {
+        Box::from_raw(self.ptr);
+    }
+
+    pub fn as_ptr(&self) -> *mut T {
+        self.ptr
+    }
+    pub fn as_ref(&self) -> &mut T {
+        unsafe { &mut *self.ptr }
+    }
+
+    pub fn from_opaque<O>(opaque: *mut O) -> Self {
+        Self::from_ptr(opaque as *mut T)
+    }
+    pub fn opaque<O>(&self) -> *mut O {
+        self.ptr as *mut O
+    }
+}
+
+impl<T> std::ops::Deref for OpaquePtr<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.as_ref()
+    }
+}
+
+impl<T> std::ops::DerefMut for OpaquePtr<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.as_ref()
+    }
+}
+
+
+#[no_mangle]
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Buffer {
@@ -84,8 +133,8 @@ impl postgres::types::ToSql for QueryParam {
     postgres::to_sql_checked!();
 }
 
-pub struct Query {
-    pub conn: *mut Connection,
+pub struct Query<'a> {
+    pub conn: &'a Connection,
     pub query: String,
     pub params: Vec<QueryParam>,
 }
@@ -95,18 +144,16 @@ pub struct Query {
 pub unsafe extern "C" fn connect(dsn: *const c_char, len: usize) -> *mut _Connection {
     let dsn_str = str::from_utf8_unchecked(slice::from_raw_parts(dsn as *const _, len));
     let conn = Connection::connect(dsn_str, TlsMode::None).unwrap();
-    let ptr = Box::new(conn);
-    Box::into_raw(ptr) as *mut _Connection
+    OpaquePtr::new(conn).opaque()
 }
 
 
 #[no_mangle]
 pub unsafe extern "C" fn new_query(conn: *mut _Connection, query: *const c_char, len: usize) -> *mut _Query {
-    let conn = conn as *mut Connection;
+    let conn = OpaquePtr::<Connection>::from_opaque(conn);
     let query_str = str::from_utf8_unchecked(slice::from_raw_parts(query as *const _, len));
-    let q = Query { conn: conn, query: query_str.to_string(), params: vec![] };
-    let ptr = Box::new(q);
-    Box::into_raw(ptr) as *mut _Query
+    let q = Query { conn: &conn, query: query_str.to_string(), params: vec![] };
+    OpaquePtr::new(q).opaque()
 }
 
 
@@ -118,46 +165,43 @@ pub unsafe extern "C" fn query_param(query: *mut _Query, param: QueryParam) {
 
 
 #[no_mangle]
-pub unsafe extern "C" fn query_exec(query: *const _Query) {
-    let query = &*(query as *const Query);
-    let conn = &*query.conn;
+pub unsafe extern "C" fn query_exec(query: *mut _Query) {
+    let query = OpaquePtr::<Query>::from_opaque(query);
     let mut params: Vec<&postgres::types::ToSql> = vec![];
     for param in &query.params {
         params.push(*Box::new(param));
     }
-    conn.execute(&query.query, params.as_slice());
+    query.conn.execute(&query.query, params.as_slice());
+    query.free();
 }
 
 
 #[no_mangle]
-pub unsafe extern "C" fn query_exec_result(query: *const _Query) -> *mut _Rows {
-    let query = &*(query as *const Query);
-    let conn = &*query.conn;
+pub unsafe extern "C" fn query_exec_result(query: *mut _Query) -> *mut _Rows {
+    let query = OpaquePtr::<Query>::from_opaque(query);
     let mut params: Vec<&postgres::types::ToSql> = vec![];
     for param in &query.params {
         params.push(*Box::new(param));
     }
-    let ptr = Box::new(conn.query(&query.query, params.as_slice()).unwrap());
-    Box::into_raw(ptr) as *mut _Rows
+    let rows = query.conn.query(&query.query, params.as_slice()).unwrap();
+    query.free();
+    OpaquePtr::new(rows).opaque()
 }
 
 
 #[no_mangle]
 pub unsafe extern "C" fn rows_iterator(rows: *mut _Rows) -> *mut _RowsIterator {
-    let rows = rows as *mut Rows;
-    let iter = (*rows).iter();
-    let ptr = Box::new(iter);
-    Box::into_raw(ptr) as *mut _RowsIterator
+    let rows = OpaquePtr::<Rows>::from_opaque(rows);
+    OpaquePtr::new(rows.iter()).opaque()
 }
 
 
 #[no_mangle]
 pub unsafe extern "C" fn next_row(iter: *mut _RowsIterator) -> *const _Row {
-    let iter = iter as *mut postgres::rows::Iter;
-    match (*iter).next() {
+    let mut iter = OpaquePtr::<postgres::rows::Iter>::from_opaque(iter);
+    match iter.next() {
         Some(x) => {
-            let ptr = Box::new(x);
-            Box::into_raw(ptr) as *const _Row
+            OpaquePtr::new(x).opaque()
         }
         None => std::ptr::null(),
     }
@@ -165,18 +209,18 @@ pub unsafe extern "C" fn next_row(iter: *mut _RowsIterator) -> *const _Row {
 
 
 #[no_mangle]
-pub unsafe extern "C" fn row_len(row: *const _Row) -> usize {
-    let row = row as *const postgres::rows::Row;
-    (*row).len()
+pub unsafe extern "C" fn row_len(row: *mut _Row) -> usize {
+    let row = OpaquePtr::<postgres::rows::Row>::from_opaque(row);
+    row.len()
 }
 
 
 #[no_mangle]
-pub unsafe extern "C" fn row_item(row: *const _Row, i: usize) -> RowItem {
-    let row = row as *const postgres::rows::Row;
-    let typename = (*row).columns()[i].type_().name();
+pub unsafe extern "C" fn row_item(row: *mut _Row, i: usize) -> RowItem {
+    let row = OpaquePtr::<postgres::rows::Row>::from_opaque(row);
+    let typename = row.columns()[i].type_().name();
 
-    match (*row).get_bytes(i) {
+    match row.get_bytes(i) {
         Some(data) => RowItem{
             typename: Buffer::from_str(typename),
             value: Buffer::from_bytes(data),
