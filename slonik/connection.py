@@ -45,6 +45,7 @@ class _Conn(rust.RustObject):
         b'int8': converter('q'),
         b'float8': converter('d'),
         b'text': lambda value: value.decode(),
+        b'unknown': lambda value: value.decode(),
         b'bpchar': lambda value: value.decode(),
         b'varchar': lambda value: value.decode(),
         b'json': json.loads,
