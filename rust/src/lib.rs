@@ -4,7 +4,6 @@ use std::os::raw::c_char;
 use std::slice;
 use std::str;
 use postgres::{Connection, TlsMode};
-use postgres::rows::{Rows};
 
 
 #[no_mangle]
@@ -13,11 +12,11 @@ pub struct _Connection;
 #[no_mangle]
 pub struct _Query;
 
-#[no_mangle]
-pub struct _Rows;
+struct _Rows;
+struct _RowsIterator;
 
 #[no_mangle]
-pub struct _RowsIterator;
+pub struct _QueryResult;
 
 #[no_mangle]
 pub struct _Row;
@@ -140,11 +139,42 @@ pub struct Query<'a> {
 }
 
 
+struct QueryResult {
+    rows: *mut _Rows,
+    iter: *mut _RowsIterator,
+}
+
+impl QueryResult {
+    pub fn from_rows(rows: postgres::rows::Rows) -> Self {
+        let iter = OpaquePtr::new(rows.iter()).opaque();
+        let rows = OpaquePtr::new(rows).opaque();
+        Self{rows, iter}
+    }
+}
+impl Drop for QueryResult {
+    fn drop (&mut self) {
+        let rows = OpaquePtr::<postgres::rows::Rows>::from_opaque(self.rows);
+        let iter = OpaquePtr::<postgres::rows::Iter>::from_opaque(self.iter);
+        unsafe {
+            iter.free();
+            rows.free();
+        }
+    }
+}
+
+
 #[no_mangle]
 pub unsafe extern "C" fn connect(dsn: *const c_char, len: usize) -> *mut _Connection {
     let dsn_str = str::from_utf8_unchecked(slice::from_raw_parts(dsn as *const _, len));
     let conn = Connection::connect(dsn_str, TlsMode::None).unwrap();
     OpaquePtr::new(conn).opaque()
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn close(conn: *mut _Connection) {
+    let conn = OpaquePtr::<Connection>::from_opaque(conn);
+    conn.free();
 }
 
 
@@ -164,41 +194,46 @@ pub unsafe extern "C" fn query_param(query: *mut _Query, param: QueryParam) {
 }
 
 
-#[no_mangle]
-pub unsafe extern "C" fn query_exec(query: *mut _Query) {
-    let query = OpaquePtr::<Query>::from_opaque(query);
+fn get_query_params<'a>(query: &'a Query) -> Vec<&'a postgres::types::ToSql> {
     let mut params: Vec<&postgres::types::ToSql> = vec![];
     for param in &query.params {
         params.push(*Box::new(param));
     }
+    params
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn query_exec(query: *mut _Query) {
+    let query = OpaquePtr::<Query>::from_opaque(query);
+    let params = get_query_params(&query);
     query.conn.execute(&query.query, params.as_slice());
     query.free();
 }
 
 
 #[no_mangle]
-pub unsafe extern "C" fn query_exec_result(query: *mut _Query) -> *mut _Rows {
+pub unsafe extern "C" fn query_exec_result(query: *mut _Query) -> *mut _QueryResult {
     let query = OpaquePtr::<Query>::from_opaque(query);
-    let mut params: Vec<&postgres::types::ToSql> = vec![];
-    for param in &query.params {
-        params.push(*Box::new(param));
-    }
+    let params = get_query_params(&query);
     let rows = query.conn.query(&query.query, params.as_slice()).unwrap();
     query.free();
-    OpaquePtr::new(rows).opaque()
+    let result = QueryResult::from_rows(rows);
+    OpaquePtr::new(result).opaque()
 }
 
 
 #[no_mangle]
-pub unsafe extern "C" fn rows_iterator(rows: *mut _Rows) -> *mut _RowsIterator {
-    let rows = OpaquePtr::<Rows>::from_opaque(rows);
-    OpaquePtr::new(rows.iter()).opaque()
+pub unsafe extern "C" fn result_close(result: *mut _QueryResult) {
+    let result = OpaquePtr::<QueryResult>::from_opaque(result);
+    result.free();
 }
 
 
 #[no_mangle]
-pub unsafe extern "C" fn next_row(iter: *mut _RowsIterator) -> *const _Row {
-    let mut iter = OpaquePtr::<postgres::rows::Iter>::from_opaque(iter);
+pub unsafe extern "C" fn next_row(result: *mut _QueryResult) -> *const _Row {
+    let result = OpaquePtr::<QueryResult>::from_opaque(result);
+    let mut iter = OpaquePtr::<postgres::rows::Iter>::from_opaque(result.iter);
     match iter.next() {
         Some(x) => {
             OpaquePtr::new(x).opaque()
@@ -212,6 +247,13 @@ pub unsafe extern "C" fn next_row(iter: *mut _RowsIterator) -> *const _Row {
 pub unsafe extern "C" fn row_len(row: *mut _Row) -> usize {
     let row = OpaquePtr::<postgres::rows::Row>::from_opaque(row);
     row.len()
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn row_close(row: *mut _Row) {
+    let row = OpaquePtr::<postgres::rows::Row>::from_opaque(row);
+    row.free();
 }
 
 

@@ -44,6 +44,9 @@ class _Conn(rust.RustObject):
 
         return rv
 
+    def close(self):
+        self._methodcall(lib.close)
+
     types = {
         b'int2': converter('h'),
         b'int4': converter('i'),
@@ -82,8 +85,7 @@ class _Conn(rust.RustObject):
 
     def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
         query = self._prepare_query(sql, *args)
-        rows = query._methodcall(lib.query_exec_result)
-        rows_iter = rust.call(lib.rows_iterator, rows)
+        result = query._methodcall(lib.query_exec_result)
 
         def _get_row_item(row, i):
             item = row._methodcall(lib.row_item, i)
@@ -98,17 +100,23 @@ class _Conn(rust.RustObject):
 
             return value
 
-        while True:
-            # Use RustObject for row
-            row = rust.call(lib.next_row, rows_iter)
-            if row == ffi.NULL:
-                break
+        try:
+            while True:
+                # Use RustObject for row
+                row = rust.call(lib.next_row, result)
+                if row == ffi.NULL:
+                    break
 
-            row = _Row._from_objptr(row)
-            yield tuple(
-                _get_row_item(row, i)
-                for i in range(row._methodcall(lib.row_len))
-            )
+                row = _Row._from_objptr(row)
+                items = tuple(
+                    _get_row_item(row, i)
+                    for i in range(row._methodcall(lib.row_len))
+                )
+                row._methodcall(lib.row_close)
+                yield items
+
+        finally:
+            rust.call(lib.result_close, result)
 
 
 class Connection():
@@ -140,6 +148,10 @@ class Connection():
             self.__conn = _Conn.from_dsn(self.dsn)
 
         return self.__conn
+
+    def close(self):
+        if self.__conn is not None:
+            self.__conn.close()
 
     def execute(self, sql: str, *args):
         _rows = self._conn.execute(sql, *args)

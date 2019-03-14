@@ -49,3 +49,5 @@ if __name__ == '__main__':
     conn.execute('INSERT INTO toto(value) VALUES ($1)', 'pouet')
     print(list(conn.query('SELECT * FROM toto')))
     conn.execute('ROLLBACK')
+
+    conn.close()

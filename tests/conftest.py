@@ -11,4 +11,4 @@ def conn():
         yield conn_
     finally:
         conn_.execute('ROLLBACK')
-        # TODO: close the connection
+        conn_.close()
