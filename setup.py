@@ -19,6 +19,7 @@ def build_native(spec):
 setup(
     name='slonik',
     version='0.0.1',
+    license='MIT',
     packages=['slonik'],
     zip_safe=False,
     platforms='any',
@@ -29,5 +30,8 @@ setup(
     },
     milksnake_tasks=[
         build_native
-    ]
+    ],
+    classifiers=[
+        "License :: OSI Approved :: MIT License",
+    ],
 )
