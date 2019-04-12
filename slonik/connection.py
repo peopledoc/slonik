@@ -2,16 +2,13 @@ import json
 import os
 import struct
 import uuid
+from typing import Any
 from typing import Iterable
+from typing import Tuple
 
 from slonik import rust
+from slonik._native import ffi
 from slonik._native import lib
-
-
-class Row():
-
-    def __init__(self, row):
-        self._row = row
 
 
 def buff_to_bytes(buff):
@@ -30,6 +27,14 @@ def converter(fmt):
     return unpack
 
 
+class _Query(rust.RustObject):
+    pass
+
+
+class _Row(rust.RustObject):
+    pass
+
+
 class _Conn(rust.RustObject):
 
     @classmethod
@@ -38,6 +43,9 @@ class _Conn(rust.RustObject):
         rv = cls._from_objptr(rust.call(lib.connect, dsn, len(dsn)))
 
         return rv
+
+    def close(self):
+        self._methodcall(lib.close)
 
     types = {
         b'int2': converter('h'),
@@ -53,23 +61,62 @@ class _Conn(rust.RustObject):
         b'uuid': lambda value: uuid.UUID(bytes=value),
     }
 
-    def query(self, sql: str):
+    def _prepare_query(self, sql: str, *args) -> _Query:
         sql = sql.encode('utf-8')
-        rows = self._methodcall(lib.query, sql, len(sql))
-        rows_iter = rust.call(lib.rows_iterator, rows)
 
-        while True:
-            row = rust.call(lib.next_row, rows_iter)
-            typename = buff_to_bytes(row.typename)
+        query = self._methodcall(lib.new_query, sql, len(sql))
+        query = _Query._from_objptr(query)
+
+        for arg in args:
+            import struct
+            if isinstance(arg, int):
+                t = ffi.from_buffer(b'int4')
+                p = ffi.from_buffer(struct.pack('>i', arg))
+            elif isinstance(arg, str):
+                t = ffi.from_buffer(b'text')
+                p = ffi.from_buffer(arg.encode())
+            query._methodcall(lib.query_param, ((len(t), t), (len(p), p)))
+
+        return query
+
+    def execute(self, sql: str, *args):
+        query = self._prepare_query(sql, *args)
+        query._methodcall(lib.query_exec)
+
+    def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
+        query = self._prepare_query(sql, *args)
+        result = query._methodcall(lib.query_exec_result)
+
+        def _get_row_item(row, i):
+            item = row._methodcall(lib.row_item, i)
+            typename = buff_to_bytes(item.typename)
             if typename is None:
-                break
+                return
 
-            value = buff_to_bytes(row.value)
+            value = buff_to_bytes(item.value)
             type_ = self.types.get(typename)
             if type_ is not None:
                 value = type_(value)
 
-            yield value
+            return value
+
+        try:
+            while True:
+                # Use RustObject for row
+                row = rust.call(lib.next_row, result)
+                if row == ffi.NULL:
+                    break
+
+                row = _Row._from_objptr(row)
+                items = tuple(
+                    _get_row_item(row, i)
+                    for i in range(row._methodcall(lib.row_len))
+                )
+                row._methodcall(lib.row_close)
+                yield items
+
+        finally:
+            rust.call(lib.result_close, result)
 
 
 class Connection():
@@ -102,11 +149,22 @@ class Connection():
 
         return self.__conn
 
-    def query(self, sql: str) -> Iterable[Row]:
-        _rows = self._conn.query(sql)
+    def close(self):
+        if self.__conn is not None:
+            self.__conn.close()
+
+    def execute(self, sql: str, *args):
+        _rows = self._conn.execute(sql, *args)
+
+    def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
+        _rows = self._conn.query(sql, *args)
 
         for row in _rows:
             yield row
 
-    def get_one(self, sql: str) -> Row:
-        return next(self.query(sql))
+    def get_one(self, sql: str, *args) -> Tuple[Any]:
+        return next(self.query(sql, *args))
+
+    def get_value(self, sql: str, *args) -> Any:
+        value, = self.get_one(sql, *args)
+        return value
