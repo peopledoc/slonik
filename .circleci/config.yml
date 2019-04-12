@@ -38,6 +38,9 @@ jobs:
       - restore_cache:
           key: deps-{{ .Revision }}
       - run:
+          name: Wait for backend
+          command: dockerize -wait tcp://localhost:5432 -timeout 120s
+      - run:
           name: Run the tests
           command: |
             . venv/bin/activate
