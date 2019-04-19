@@ -11,12 +11,6 @@ from slonik._native import ffi
 from slonik._native import lib
 
 
-def buff_to_bytes(buff):
-    if not buff.bytes:
-        return None
-    return bytes(buff.bytes[0:buff.size])
-
-
 def converter(fmt):
     fmt = '>' + fmt
 
@@ -40,8 +34,8 @@ class _Conn(rust.RustObject):
     @classmethod
     def from_dsn(cls, dsn):
         dsn = dsn.encode('utf-8')
-        rv = cls._from_objptr(rust.call(lib.connect, dsn, len(dsn)))
-
+        result = rust.call(lib.connect, dsn, len(dsn))
+        rv = cls._from_objptr(result)
         return rv
 
     def close(self):
@@ -89,11 +83,11 @@ class _Conn(rust.RustObject):
 
         def _get_row_item(row, i):
             item = row._methodcall(lib.row_item, i)
-            typename = buff_to_bytes(item.typename)
+            typename = rust.buff_to_bytes(item.typename)
             if typename is None:
                 return
 
-            value = buff_to_bytes(item.value)
+            value = rust.buff_to_bytes(item.value)
             type_ = self.types.get(typename)
             if type_ is not None:
                 value = type_(value)

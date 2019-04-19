@@ -24,6 +24,52 @@ pub struct _Row;
 #[no_mangle]
 pub struct _Opaque;
 
+#[no_mangle]
+pub struct _Error;
+
+#[no_mangle]
+#[repr(C)]
+pub struct FFIResult<T> {
+    status: u8,
+    data: *const T,
+}
+
+impl<T> FFIResult<T> {
+    fn new<O>(status: u8, obj: O) -> Self {
+        Self { status, data: OpaquePtr::new(obj).opaque() }
+    }
+    pub fn from_obj<O>(obj: O) -> Self {
+        Self::new(0, obj)
+    }
+    pub fn from_error<E: std::error::Error>(error: E) -> Self {
+        let error = Error { code: 1, msg: format!("{}", error) };
+        Self::new(error.code, error)
+    }
+    pub fn from_result<O, E: std::error::Error>(result: Result<O, E>) -> Self {
+        match result {
+            Ok(o) => Self::from_obj(o),
+            Err(e) => Self::from_error(e),
+        }
+    }
+}
+
+pub struct Error {
+    code: u8,
+    msg: String,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn error_msg(error: *mut _Error) -> Buffer {
+    let error = OpaquePtr::<Error>::from_opaque(error);
+    Buffer::from_str(&error.msg)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn error_free(error: *mut _Error) {
+    let error = OpaquePtr::<Error>::from_opaque(error);
+    error.free();
+}
+
 pub struct OpaquePtr<T> {
     ptr: *mut T
 }
@@ -164,10 +210,9 @@ impl Drop for QueryResult {
 
 
 #[no_mangle]
-pub unsafe extern "C" fn connect(dsn: *const c_char, len: usize) -> *mut _Connection {
+pub unsafe extern "C" fn connect(dsn: *const c_char, len: usize) -> FFIResult<_Connection> {
     let dsn_str = str::from_utf8_unchecked(slice::from_raw_parts(dsn as *const _, len));
-    let conn = Connection::connect(dsn_str, TlsMode::None).unwrap();
-    OpaquePtr::new(conn).opaque()
+    FFIResult::from_result(Connection::connect(dsn_str, TlsMode::None))
 }
 
 
@@ -204,22 +249,23 @@ fn get_query_params<'a>(query: &'a Query) -> Vec<&'a postgres::types::ToSql> {
 
 
 #[no_mangle]
-pub unsafe extern "C" fn query_exec(query: *mut _Query) {
+pub unsafe extern "C" fn query_exec(query: *mut _Query) -> FFIResult<u8> {
     let query = OpaquePtr::<Query>::from_opaque(query);
     let params = get_query_params(&query);
-    query.conn.execute(&query.query, params.as_slice());
+    let result = query.conn.execute(&query.query, params.as_slice());
     query.free();
+    FFIResult::from_result(result)
 }
 
 
 #[no_mangle]
-pub unsafe extern "C" fn query_exec_result(query: *mut _Query) -> *mut _QueryResult {
+pub unsafe extern "C" fn query_exec_result(query: *mut _Query) -> FFIResult<_QueryResult> {
     let query = OpaquePtr::<Query>::from_opaque(query);
     let params = get_query_params(&query);
-    let rows = query.conn.query(&query.query, params.as_slice()).unwrap();
+    let result = query.conn.query(&query.query, params.as_slice());
     query.free();
-    let result = QueryResult::from_rows(rows);
-    OpaquePtr::new(result).opaque()
+
+    FFIResult::from_result(result.map(|r| QueryResult::from_rows(r)))
 }
 
 

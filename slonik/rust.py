@@ -50,44 +50,33 @@ class RustObject(metaclass=_NoDict):
             self._objptr = None
 
 
+def isresult(value):
+    if isinstance(value, ffi.CData):
+        vtype = ffi.typeof(value)
+        if vtype.kind == 'struct' and vtype.cname.startswith('FFIResult_'):
+            return [f for f, _ in vtype.fields] == ['status', 'data']
+    return False
+
+
 def call(func, *args):
     """Calls rust method and does some error handling."""
-    # lib.semaphore_err_clear()
-    rv = func(*args)
-    return rv
-    # err = lib.semaphore_err_get_last_code()
-    # if not err:
-    #     return rv
-    # msg = lib.semaphore_err_get_last_message()
-    # exc = SlonikException(decode_str(msg))
-    # backtrace = decode_str(lib.semaphore_err_get_backtrace())
-    # if backtrace:
-    #     exc.rust_info = backtrace
-    # raise exc
+    result = func(*args)
+    if isresult(result):
+        if result.status:
+            error = ffi.cast('_Error*', result.data)
+            try:
+                error_msg = buff_to_bytes(lib.error_msg(error)).decode()
+                raise SlonikException(error_msg)
+            finally:
+                lib.error_free(error)
+        result = result.data
+    return result
 
 
-def decode_str(s, free=False):
-    """Decodes a SymbolicStr"""
-    try:
-        if s.len == 0:
-            return u''
-        return ffi.unpack(s.data, s.len).decode('utf-8', 'replace')
-    finally:
-        if free:
-            lib.semaphore_str_free(ffi.addressof(s))
-
-
-def encode_str(s):
-    """Encodes a SemaphoreStr"""
-    rv = ffi.new('SemaphoreStr *')
-    if isinstance(s, str):
-        s = s.encode('utf-8')
-    rv.data = ffi.from_buffer(s)
-    rv.len = len(s)
-    # we have to hold a weak reference here to ensure our string does not
-    # get collected before the string is used.
-    attached_refs[rv] = s
-    return rv
+def buff_to_bytes(buff):
+    if not buff.bytes:
+        return None
+    return bytes(buff.bytes[0:buff.size])
 
 
 def make_buf(value):

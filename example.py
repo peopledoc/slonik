@@ -50,4 +50,18 @@ if __name__ == '__main__':
     print(list(conn.query('SELECT * FROM toto')))
     conn.execute('ROLLBACK')
 
+    #####
+
+    try:
+        conn.get_value('SELECT bar FROM foo')
+    except Exception as e:
+        print(e)
+
+    try:
+        conn.execute('INSERT INTO foo(bar) VALUES (0)')
+    except Exception as e:
+        print(e)
+
+    #####
+
     conn.close()
