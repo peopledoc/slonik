@@ -1,4 +1,5 @@
 from slonik import Connection
+from slonik import SlonikException
 
 
 if __name__ == '__main__':
@@ -54,12 +55,12 @@ if __name__ == '__main__':
 
     try:
         conn.get_value('SELECT bar FROM foo')
-    except Exception as e:
+    except SlonikException as e:
         print(e)
 
     try:
         conn.execute('INSERT INTO foo(bar) VALUES (0)')
-    except Exception as e:
+    except SlonikException as e:
         print(e)
 
     #####

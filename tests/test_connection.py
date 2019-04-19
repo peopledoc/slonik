@@ -1,7 +1,7 @@
 from slonik import Connection
 
 
-def test_from_env(conn):
+def test_from_env():
     conn = Connection.from_env(pguser='this-is', pgpassword='a-test')
     assert conn.dsn.startswith('postgresql://this-is:a-test@')
 
