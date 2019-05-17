@@ -114,8 +114,10 @@ class Row:
 
 
 class _Query(rust.RustObject):
-    def add_param(self, type_: bytes, value: bytes):
-        self._methodcall(lib.query_param, ((len(type_), type_), (len(value), value)))
+    def add_param(self, typename: bytes, value: bytes):
+        typename = ffi.from_buffer(typename)
+        value = ffi.from_buffer(value)
+        self._methodcall(lib.query_param, ((len(typename), typename), (len(value), value)))
 
     def execute(self):
         self._methodcall(lib.query_exec)
@@ -131,17 +133,15 @@ class Query:
         self.params = []
 
     def add_param(self, param):
-        import struct
-        # Keep the ffi part in _Query
         if isinstance(param, int):
-            t = ffi.from_buffer(b'int4')
-            p = ffi.from_buffer(struct.pack('>i', param))
+            typename = b'int4'
+            value = struct.pack('>i', param)
         elif isinstance(param, str):
-            t = ffi.from_buffer(b'text')
-            p = ffi.from_buffer(param.encode())
+            typename = b'str'
+            value = param.encode()
 
-        self.params.append((t, p))
-        self._query.add_param(t, p)
+        self.params.append((typename, value))
+        self._query.add_param(typename, value)
 
     def add_params(self, params):
         for param in params:
