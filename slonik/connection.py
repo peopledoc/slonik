@@ -21,7 +21,54 @@ def converter(fmt):
     return unpack
 
 
-class _Query(rust.RustObject):
+class _Result(rust.RustObject):
+    def next_row(self):
+        row = self._methodcall(lib.next_row)
+        if row == ffi.NULL:
+            return
+        return _Row._from_objptr(row)
+
+    def close(self):
+        self._methodcall(lib.result_close)
+
+
+class Result:
+    def __init__(self, _result):
+        self._result = _result
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        _row = self._result.next_row()
+        if _row is None:
+            raise StopIteration
+
+        with Row(_row) as row:
+            return tuple(row)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._result.close()
+
+
+class _Row(rust.RustObject):
+    def len(self):
+        return self._methodcall(lib.row_len)
+
+    def item(self, i):
+        item = self._methodcall(lib.row_item, i)
+        typename = rust.buff_to_bytes(item.typename)
+        value = rust.buff_to_bytes(item.value)
+        return typename, value
+
+    def close(self):
+        self._methodcall(lib.row_close)
+
+
+class Row:
     types = {
         b'int2': converter('h'),
         b'int4': converter('i'),
@@ -35,6 +82,38 @@ class _Query(rust.RustObject):
         b'jsonb': lambda value: json.loads(value[1:]),  # always start with '1'
         b'uuid': lambda value: uuid.UUID(bytes=value),
     }
+
+    def __init__(self, _row):
+        self._row = _row
+        self._len = None
+
+    def __len__(self):
+        if self._len is None:
+            self._len = self._row.len()
+        return self._len
+
+    def __getitem__(self, i):
+        if not 0 <= i < len(self):
+            raise IndexError(f'Index {i!r} out fo range')
+
+        typename, value = self._row.item(i)
+        if typename is None:
+            return
+
+        type_ = self.types.get(typename)
+        if type_ is not None:
+            value = type_(value)
+
+        return value
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._row.close()
+
+
+class _Query(rust.RustObject):
     def add_param(self, type_: bytes, value: bytes):
         self._methodcall(lib.query_param, ((len(type_), type_), (len(value), value)))
 
@@ -43,38 +122,7 @@ class _Query(rust.RustObject):
 
     def execute_result(self):
         result = self._methodcall(lib.query_exec_result)
-
-        def _get_row_item(row, i):
-            item = row._methodcall(lib.row_item, i)
-            typename = rust.buff_to_bytes(item.typename)
-            if typename is None:
-                return
-
-            value = rust.buff_to_bytes(item.value)
-            type_ = self.types.get(typename)
-            if type_ is not None:
-                value = type_(value)
-
-            return value
-
-        try:
-            while True:
-                # Use RustObject for row
-                row = rust.call(lib.next_row, result)
-                if row == ffi.NULL:
-                    break
-
-                row = _Row._from_objptr(row)
-                items = tuple(
-                    _get_row_item(row, i)
-                    for i in range(row._methodcall(lib.row_len))
-                )
-                row._methodcall(lib.row_close)
-                yield items
-
-        finally:
-            rust.call(lib.result_close, result)
-
+        return _Result._from_objptr(result)
 
 
 class Query:
@@ -84,6 +132,7 @@ class Query:
 
     def add_param(self, param):
         import struct
+        # Keep the ffi part in _Query
         if isinstance(param, int):
             t = ffi.from_buffer(b'int4')
             p = ffi.from_buffer(struct.pack('>i', param))
@@ -102,12 +151,8 @@ class Query:
         self._query.execute()
 
     def execute_result(self):
-        for row in self._query.execute_result():
-            yield row
-
-
-class _Row(rust.RustObject):
-    pass
+        with Result(self._query.execute_result()) as result:
+            yield from result
 
 
 class _Conn(rust.RustObject):
@@ -121,7 +166,7 @@ class _Conn(rust.RustObject):
     def close(self):
         self._methodcall(lib.close)
 
-    def get_query(self, sql: bytes):
+    def new_query(self, sql: bytes):
         query = self._methodcall(lib.new_query, sql, len(sql))
         return _Query._from_objptr(query)
 
@@ -162,7 +207,7 @@ class Connection():
 
     def _get_query(self, sql: str, params):
         sql = sql.encode('utf-8')
-        query = Query(self._conn.get_query(sql))
+        query = Query(self._conn.new_query(sql))
         query.add_params(params)
         return query
 
