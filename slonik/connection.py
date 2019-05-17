@@ -22,25 +22,6 @@ def converter(fmt):
 
 
 class _Query(rust.RustObject):
-    pass
-
-
-class _Row(rust.RustObject):
-    pass
-
-
-class _Conn(rust.RustObject):
-
-    @classmethod
-    def from_dsn(cls, dsn):
-        dsn = dsn.encode('utf-8')
-        result = rust.call(lib.connect, dsn, len(dsn))
-        rv = cls._from_objptr(result)
-        return rv
-
-    def close(self):
-        self._methodcall(lib.close)
-
     types = {
         b'int2': converter('h'),
         b'int4': converter('i'),
@@ -54,32 +35,14 @@ class _Conn(rust.RustObject):
         b'jsonb': lambda value: json.loads(value[1:]),  # always start with '1'
         b'uuid': lambda value: uuid.UUID(bytes=value),
     }
+    def add_param(self, type_: bytes, value: bytes):
+        self._methodcall(lib.query_param, ((len(type_), type_), (len(value), value)))
 
-    def _prepare_query(self, sql: str, *args) -> _Query:
-        sql = sql.encode('utf-8')
+    def execute(self):
+        self._methodcall(lib.query_exec)
 
-        query = self._methodcall(lib.new_query, sql, len(sql))
-        query = _Query._from_objptr(query)
-
-        for arg in args:
-            import struct
-            if isinstance(arg, int):
-                t = ffi.from_buffer(b'int4')
-                p = ffi.from_buffer(struct.pack('>i', arg))
-            elif isinstance(arg, str):
-                t = ffi.from_buffer(b'text')
-                p = ffi.from_buffer(arg.encode())
-            query._methodcall(lib.query_param, ((len(t), t), (len(p), p)))
-
-        return query
-
-    def execute(self, sql: str, *args):
-        query = self._prepare_query(sql, *args)
-        query._methodcall(lib.query_exec)
-
-    def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
-        query = self._prepare_query(sql, *args)
-        result = query._methodcall(lib.query_exec_result)
+    def execute_result(self):
+        result = self._methodcall(lib.query_exec_result)
 
         def _get_row_item(row, i):
             item = row._methodcall(lib.row_item, i)
@@ -113,6 +76,56 @@ class _Conn(rust.RustObject):
             rust.call(lib.result_close, result)
 
 
+
+class Query:
+    def __init__(self, _query):
+        self._query = _query
+        self.params = []
+
+    def add_param(self, param):
+        import struct
+        if isinstance(param, int):
+            t = ffi.from_buffer(b'int4')
+            p = ffi.from_buffer(struct.pack('>i', param))
+        elif isinstance(param, str):
+            t = ffi.from_buffer(b'text')
+            p = ffi.from_buffer(param.encode())
+
+        self.params.append((t, p))
+        self._query.add_param(t, p)
+
+    def add_params(self, params):
+        for param in params:
+            self.add_param(param)
+
+    def execute(self):
+        self._query.execute()
+
+    def execute_result(self):
+        for row in self._query.execute_result():
+            yield row
+
+
+class _Row(rust.RustObject):
+    pass
+
+
+class _Conn(rust.RustObject):
+
+    @classmethod
+    def from_dsn(cls, dsn: bytes):
+        result = rust.call(lib.connect, dsn, len(dsn))
+        rv = cls._from_objptr(result)
+        return rv
+
+    def close(self):
+        self._methodcall(lib.close)
+
+    def get_query(self, sql: bytes):
+        query = self._methodcall(lib.new_query, sql, len(sql))
+        return _Query._from_objptr(query)
+
+
 class Connection():
 
     def __init__(self, dsn: str):
@@ -139,7 +152,7 @@ class Connection():
     @property
     def _conn(self):
         if not self.__conn:
-            self.__conn = _Conn.from_dsn(self.dsn)
+            self.__conn = _Conn.from_dsn(self.dsn.encode('utf-8'))
 
         return self.__conn
 
@@ -147,14 +160,19 @@ class Connection():
         if self.__conn is not None:
             self.__conn.close()
 
+    def _get_query(self, sql: str, params):
+        sql = sql.encode('utf-8')
+        query = Query(self._conn.get_query(sql))
+        query.add_params(params)
+        return query
+
     def execute(self, sql: str, *args):
-        _rows = self._conn.execute(sql, *args)
+        query = self._get_query(sql, args)
+        query.execute()
 
     def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
-        _rows = self._conn.query(sql, *args)
-
-        for row in _rows:
-            yield row
+        query = self._get_query(sql, args)
+        yield from query.execute_result()
 
     def get_one(self, sql: str, *args) -> Tuple[Any]:
         return next(self.query(sql, *args))
