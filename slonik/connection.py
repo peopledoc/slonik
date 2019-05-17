@@ -11,7 +11,7 @@ from slonik._native import ffi
 from slonik._native import lib
 
 
-def converter(fmt):
+def get_deserializer(fmt):
     fmt = '>' + fmt
 
     def unpack(value):
@@ -19,6 +19,15 @@ def converter(fmt):
         return ret
 
     return unpack
+
+
+def get_serializer(typename, fmt):
+    fmt = '>' + fmt
+
+    def pack(value):
+        return typename, struct.pack(fmt, value)
+
+    return pack
 
 
 class _Result(rust.RustObject):
@@ -69,11 +78,11 @@ class _Row(rust.RustObject):
 
 
 class Row:
-    types = {
-        b'int2': converter('h'),
-        b'int4': converter('i'),
-        b'int8': converter('q'),
-        b'float8': converter('d'),
+    deserializers = {
+        b'int2': get_deserializer('h'),
+        b'int4': get_deserializer('i'),
+        b'int8': get_deserializer('q'),
+        b'float8': get_deserializer('d'),
         b'text': lambda value: value.decode(),
         b'unknown': lambda value: value.decode(),
         b'bpchar': lambda value: value.decode(),
@@ -100,9 +109,9 @@ class Row:
         if typename is None:
             return
 
-        type_ = self.types.get(typename)
-        if type_ is not None:
-            value = type_(value)
+        deserializer = self.deserializers.get(typename)
+        if deserializer is not None:
+            value = deserializer(value)
 
         return value
 
@@ -128,17 +137,18 @@ class _Query(rust.RustObject):
 
 
 class Query:
+    serializers = {
+        int: get_serializer(b'int4', 'i'),
+        str: lambda s: (b'str', s.encode()),
+    }
+
     def __init__(self, _query):
         self._query = _query
         self.params = []
 
     def add_param(self, param):
-        if isinstance(param, int):
-            typename = b'int4'
-            value = struct.pack('>i', param)
-        elif isinstance(param, str):
-            typename = b'str'
-            value = param.encode()
+        serializer = self.serializers[type(param)]
+        typename, value = serializer(param)
 
         self.params.append((typename, value))
         self._query.add_param(typename, value)
