@@ -25,6 +25,9 @@ class Result:
         return self
 
     def __next__(self):
+        if self._result is None:
+            raise StopIteration
+
         _row = self._result.next_row()
         if _row is None:
             raise StopIteration
@@ -32,8 +35,13 @@ class Result:
         with Row(_row) as row:
             return tuple(row)
 
+    def close(self):
+        if self._result is not None:
+            self._result.close()
+        self._result = None
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._result.close()
+        self.close()

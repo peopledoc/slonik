@@ -52,7 +52,10 @@ class Row:
 
     def __len__(self):
         if self._len is None:
-            self._len = self._row.len()
+            if self._row is None:
+                self._len = 0
+            else:
+                self._len = self._row.len()
         return self._len
 
     def __getitem__(self, i):
@@ -69,8 +72,13 @@ class Row:
 
         return value
 
+    def close(self):
+        self._row.close()
+        self._row = None
+        self._len = 0
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._row.close()
+        self.close()

@@ -62,6 +62,12 @@ class Connection:
         if self.__conn is not None:
             self.__conn.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
     def _get_query(self, sql: str, params):
         sql = sql.encode('utf-8')
         query = Query(self._conn.new_query(sql))

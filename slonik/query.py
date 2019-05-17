@@ -30,6 +30,8 @@ class _Query(rust.RustObject):
         result = self._methodcall(lib.query_exec_result)
         return _Result._from_objptr(result)
 
+    # TODO: Add a close method called if Query is cancelled (or called everytime?)
+
 
 class Query:
     serializers = {
