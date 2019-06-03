@@ -28,7 +28,7 @@ class RustObject(metaclass=_NoDict):
 
     @classmethod
     def _from_objptr(cls, ptr, shared=False):
-        rv = object.__new__(cls)
+        rv = super().__new__(cls)
         rv._objptr = ptr
         rv._shared = shared
         return rv
@@ -77,17 +77,3 @@ def buff_to_bytes(buff):
     if not buff.bytes:
         return None
     return bytes(buff.bytes[0:buff.size])
-
-
-def make_buf(value):
-    buf = memoryview(bytes(value))
-    rv = ffi.new('SemaphoreBuf *')
-    rv.data = ffi.from_buffer(buf)
-    rv.len = len(buf)
-    attached_refs[rv] = buf
-    return rv
-
-
-def decode_uuid(value):
-    """Decodes the given uuid value."""
-    return uuid.UUID(bytes=bytes(bytearray(ffi.unpack(value.data, 16))))

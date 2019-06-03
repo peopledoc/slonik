@@ -10,111 +10,26 @@ from slonik import rust
 from slonik._native import ffi
 from slonik._native import lib
 
-
-def converter(fmt):
-    fmt = '>' + fmt
-
-    def unpack(value):
-        ret, = struct.unpack(fmt, value)
-        return ret
-
-    return unpack
-
-
-class _Query(rust.RustObject):
-    pass
-
-
-class _Row(rust.RustObject):
-    pass
+from .query import _Query
+from .query import Query
 
 
 class _Conn(rust.RustObject):
 
     @classmethod
-    def from_dsn(cls, dsn):
-        dsn = dsn.encode('utf-8')
-        result = rust.call(lib.connect, dsn, len(dsn))
-        rv = cls._from_objptr(result)
-        return rv
+    def connect(cls, dsn: bytes):
+        conn = rust.call(lib.connect, dsn, len(dsn))
+        return cls._from_objptr(conn)
 
     def close(self):
         self._methodcall(lib.close)
 
-    types = {
-        b'int2': converter('h'),
-        b'int4': converter('i'),
-        b'int8': converter('q'),
-        b'float8': converter('d'),
-        b'text': lambda value: value.decode(),
-        b'unknown': lambda value: value.decode(),
-        b'bpchar': lambda value: value.decode(),
-        b'varchar': lambda value: value.decode(),
-        b'json': json.loads,
-        b'jsonb': lambda value: json.loads(value[1:]),  # always start with '1'
-        b'uuid': lambda value: uuid.UUID(bytes=value),
-    }
-
-    def _prepare_query(self, sql: str, *args) -> _Query:
-        sql = sql.encode('utf-8')
-
+    def new_query(self, sql: bytes):
         query = self._methodcall(lib.new_query, sql, len(sql))
-        query = _Query._from_objptr(query)
-
-        for arg in args:
-            import struct
-            if isinstance(arg, int):
-                t = ffi.from_buffer(b'int4')
-                p = ffi.from_buffer(struct.pack('>i', arg))
-            elif isinstance(arg, str):
-                t = ffi.from_buffer(b'text')
-                p = ffi.from_buffer(arg.encode())
-            query._methodcall(lib.query_param, ((len(t), t), (len(p), p)))
-
-        return query
-
-    def execute(self, sql: str, *args):
-        query = self._prepare_query(sql, *args)
-        query._methodcall(lib.query_exec)
-
-    def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
-        query = self._prepare_query(sql, *args)
-        result = query._methodcall(lib.query_exec_result)
-
-        def _get_row_item(row, i):
-            item = row._methodcall(lib.row_item, i)
-            typename = rust.buff_to_bytes(item.typename)
-            if typename is None:
-                return
-
-            value = rust.buff_to_bytes(item.value)
-            type_ = self.types.get(typename)
-            if type_ is not None:
-                value = type_(value)
-
-            return value
-
-        try:
-            while True:
-                # Use RustObject for row
-                row = rust.call(lib.next_row, result)
-                if row == ffi.NULL:
-                    break
-
-                row = _Row._from_objptr(row)
-                items = tuple(
-                    _get_row_item(row, i)
-                    for i in range(row._methodcall(lib.row_len))
-                )
-                row._methodcall(lib.row_close)
-                yield items
-
-        finally:
-            rust.call(lib.result_close, result)
+        return _Query._from_objptr(query)
 
 
-class Connection():
-
+class Connection:
     def __init__(self, dsn: str):
         self.dsn = dsn
         self.__conn = None
@@ -139,7 +54,7 @@ class Connection():
     @property
     def _conn(self):
         if not self.__conn:
-            self.__conn = _Conn.from_dsn(self.dsn)
+            self.__conn = _Conn.connect(self.dsn.encode('utf-8'))
 
         return self.__conn
 
@@ -147,14 +62,25 @@ class Connection():
         if self.__conn is not None:
             self.__conn.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def _get_query(self, sql: str, params):
+        sql = sql.encode('utf-8')
+        query = Query(self._conn.new_query(sql))
+        query.add_params(params)
+        return query
+
     def execute(self, sql: str, *args):
-        _rows = self._conn.execute(sql, *args)
+        query = self._get_query(sql, args)
+        query.execute()
 
     def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
-        _rows = self._conn.query(sql, *args)
-
-        for row in _rows:
-            yield row
+        query = self._get_query(sql, args)
+        yield from query.execute_result()
 
     def get_one(self, sql: str, *args) -> Tuple[Any]:
         return next(self.query(sql, *args))
