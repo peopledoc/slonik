@@ -39,6 +39,9 @@ if __name__ == '__main__':
     result = conn.get_value('SELECT $1::text', 'abc')
     print(repr(result))
 
+    result = conn.get_value('SELECT $1::float', 42.4)
+    print(repr(result))
+
     #####
 
     conn.execute('BEGIN')

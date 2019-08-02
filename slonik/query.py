@@ -36,7 +36,8 @@ class _Query(rust.RustObject):
 class Query:
     serializers = {
         int: get_serializer(b'int4', 'i'),
-        str: lambda s: (b'str', s.encode()),
+        float: get_serializer(b'float8', 'd'),
+        str: lambda s: (b'text', s.encode()),
     }
 
     def __init__(self, _query):
