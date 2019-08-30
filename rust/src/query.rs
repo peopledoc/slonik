@@ -24,7 +24,50 @@ pub struct QueryParam {
     pub value: Buffer,
 }
 
-impl postgres::types::ToSql for QueryParam {
+pub trait ParamType {
+    const name: &'static str;
+}
+
+macro_rules! get_typed_param {
+    ($typename: expr, $value: expr) => {
+        {
+            #[derive(Copy, Clone, Debug)]
+            struct _ParamType {}
+            impl ParamType for _ParamType {
+                const name: &'static str = $typename;
+            }
+            Box::new(TypedQueryParam::<_ParamType>::new($value))
+        }
+    }
+}
+
+impl QueryParam {
+    pub unsafe fn typed_param(&self) -> Box<postgres::types::ToSql> {
+        match self.typename.to_str() {
+            "text" => get_typed_param!("text", self.value),
+            "int4" => get_typed_param!("int4", self.value),
+            "float8" => get_typed_param!("float8", self.value),
+            _ => {
+                println!("unknown type: {:?}", self.typename.to_str());
+                get_typed_param!("", self.value)
+            },
+        }
+    }
+}
+
+#[no_mangle]
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct TypedQueryParam<T: ParamType + std::fmt::Debug> {
+    pub value: Buffer,
+    phantom: std::marker::PhantomData<T>,
+}
+impl<T: ParamType + std::fmt::Debug> TypedQueryParam<T> {
+    pub fn new(value: Buffer) -> Self {
+        Self{value, phantom: std::marker::PhantomData}
+    }
+}
+impl<T: ParamType + std::fmt::Debug> postgres::types::ToSql for TypedQueryParam<T> {
     fn to_sql(&self, ty: &postgres::types::Type, out: &mut Vec<u8>) -> Result<postgres::types::IsNull, Box<std::error::Error + 'static + Send + Sync>> {
         for i in 0..self.value.size {
             out.push(unsafe { *self.value.bytes.offset(i as isize) });
@@ -33,8 +76,7 @@ impl postgres::types::ToSql for QueryParam {
     }
 
     fn accepts(ty: &postgres::types::Type) -> bool {
-        //ty.name() == "int4"
-        true
+        ty.name() == T::name
     }
 
     postgres::to_sql_checked!();
@@ -43,7 +85,24 @@ impl postgres::types::ToSql for QueryParam {
 pub struct Query<'a> {
     pub conn: &'a Connection,
     pub query: String,
-    pub params: Vec<QueryParam>,
+    pub params: Vec<Box<postgres::types::ToSql>>,
+}
+
+impl<'a> Query<'a> {
+    pub fn sql_params(&self) -> Vec<&postgres::types::ToSql> {
+        self.params.iter().map(|p| p.as_ref()).collect()
+    }
+
+    pub fn execute(&self) -> Result<u64, postgres::Error> {
+        let params = self.sql_params();
+        self.conn.execute(&self.query, params.as_slice())
+    }
+
+    pub fn execute_with_result(&self) -> Result<QueryResult, postgres::Error> {
+        let params = self.sql_params();
+        let result = self.conn.query(&self.query, params.as_slice());
+        result.map(|rows| QueryResult::from_rows(rows))
+    }
 }
 
 
@@ -83,24 +142,14 @@ pub unsafe extern "C" fn new_query(conn: *mut _Connection, query: *const c_char,
 #[no_mangle]
 pub unsafe extern "C" fn query_param(query: *mut _Query, param: QueryParam) {
     let query = &mut *(query as *mut Query);
-    query.params.push(param);
-}
-
-
-fn get_query_params<'a>(query: &'a Query) -> Vec<&'a postgres::types::ToSql> {
-    let mut params: Vec<&postgres::types::ToSql> = vec![];
-    for param in &query.params {
-        params.push(*Box::new(param));
-    }
-    params
+    query.params.push(param.typed_param());
 }
 
 
 #[no_mangle]
 pub unsafe extern "C" fn query_exec(query: *mut _Query) -> FFIResult<u8> {
     let query = OpaquePtr::<Query>::from_opaque(query);
-    let params = get_query_params(&query);
-    let result = query.conn.execute(&query.query, params.as_slice());
+    let result = query.execute();
     query.free();
     FFIResult::from_result(result)
 }
@@ -109,11 +158,9 @@ pub unsafe extern "C" fn query_exec(query: *mut _Query) -> FFIResult<u8> {
 #[no_mangle]
 pub unsafe extern "C" fn query_exec_result(query: *mut _Query) -> FFIResult<_QueryResult> {
     let query = OpaquePtr::<Query>::from_opaque(query);
-    let params = get_query_params(&query);
-    let result = query.conn.query(&query.query, params.as_slice());
+    let result = query.execute_with_result();
     query.free();
-
-    FFIResult::from_result(result.map(|r| QueryResult::from_rows(r)))
+    FFIResult::from_result(result)
 }
 
 

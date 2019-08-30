@@ -29,3 +29,10 @@ def test_execute_error(conn):
     with pytest.raises(SlonikException) as e:
         conn.execute('DELETE MORF foo')
     assert 'syntax error at or near "MORF"' in str(e.value)
+
+
+def test_param_type_error(conn):
+    with pytest.raises(SlonikException) as e:
+        conn.get_value('SELECT $1::text', 42)
+    assert str(e.value) == ("type conversion error: cannot convert to or from "
+                            "a Postgres value of type `text`")
