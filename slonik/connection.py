@@ -1,3 +1,5 @@
+import asyncio
+import concurrent
 import json
 import os
 import struct
@@ -88,3 +90,51 @@ class Connection:
     def get_value(self, sql: str, *args) -> Any:
         value, = self.get_one(sql, *args)
         return value
+
+
+class ConnectionPool:
+    def __init__(self, dsn):
+        self.dsn = dsn
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        # Each thread will then instanciate each own _Conn object on demand
+        self.connection = Connection(self.dsn)
+
+    @classmethod
+    def from_env(cls, pghost: str = '', pgport: str = '', pguser: str = '',
+                 pgpassword: str = '', pgdatabase: str = '',
+                 pgoptions: str = ''):
+        pghost = pghost or os.environ.get('PGHOST', 'localhost')
+        pgport = pgport or os.environ.get('PGPORT', '5432')
+        pguser = pguser or os.environ.get('PGUSER', 'postgres')
+        pgpassword = pgpassword or os.environ.get('PGPASSWORD', 'postgres')
+        pgdatabase = pgdatabase or os.environ.get('PGDATABASE', 'postgres')
+        pgoptions = pgoptions or os.environ.get('PGOPTIONS', '')
+
+        dsn = (
+            f'postgresql://{pguser}:{pgpassword}@{pghost}:{pgport}'
+            f'/{pgdatabase}?{pgoptions}'
+        )
+        return cls(dsn)
+
+    def close(self):
+        #self.conn.close()
+        self.executor.shutdown()
+
+    def _run(self, method, args, kwargs):
+        return method(*args, **kwargs)
+
+    async def _async_run(self, method, args, kwargs):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, self._run, method, args, kwargs)
+
+    async def execute(self, *args, **kwargs):
+        return await self._async_run(self.connection.execute, args, kwargs)
+
+    async def query(self, *args, **kwargs):
+        return await self._async_run(self.connection.query, args, kwargs)
+
+    async def get_one(self, *args, **kwargs):
+        return await self._async_run(self.connection.get_one, args, kwargs)
+
+    async def get_value(self, *args, **kwargs):
+        return await self._async_run(self.connection.get_value, args, kwargs)
