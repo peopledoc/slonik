@@ -103,35 +103,61 @@ class Connection(BaseConnection):
         return value
 
 
+class AsyncPool:
+    def __init__(self, ctor, dtor=None, max_instances=4):
+        assert max_instances > 0
+        self.max_instances = max_instances
+        self.ctor = ctor
+        self.dtor = dtor
+        self._pool = set()
+        self._free = set()
+        self._cond = asyncio.Condition()
+
+    async def _acquire(self):
+        async with self._cond:
+            while True:
+                if self._free:
+                    # Reuse a free instance
+                    return self._free.pop()
+                elif len(self._pool) < self.max_instances:
+                    # Create a new instance
+                    obj = await self.ctor()
+                    self._pool.add(obj)
+                    return obj
+                else:
+                    # Wait for an instance to be free
+                    await self._cond.wait()
+
+    async def _release(self, obj):
+        async with self._cond:
+            self._free.add(obj)
+            self._cond.notify()
+
+    @asynccontextmanager
+    async def get(self):
+        obj = await self._acquire()
+        try:
+            yield obj
+        finally:
+            await self._release(obj)
+
+    async def close(self):
+        async with self._cond:
+            pool, self._pool = self._pool, set()
+        if self.dtor is not None:
+            for obj in pool:
+                await self.dtor(obj)
+
+
 class AsyncConnection(BaseConnection):
     def __init__(self, dsn):
         super().__init__(dsn)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-        self._pool = set()
-        self._pool_lock = asyncio.Lock()
-
-    async def _acquire(self):
-        # Should only be called in the main thread
-        async with self._pool_lock:
-            # should wait for a free conn if 4 already exist
-            if self._pool:
-                conn = self._pool.pop()
-            else:
-                loop = asyncio.get_running_loop()
-                conn = await loop.run_in_executor(self._executor, _Conn.connect, self.dsn.encode('utf-8'))
-            return conn
-
-    async def _release(self, conn):
-        # Should only be called in the main thread
-        async with self._pool_lock:
-            self._pool.add(conn)
+        self._pool = AsyncPool(self._get_conn, self._close_conn, max_instances=4)
 
     async def close(self):
         self._executor.shutdown()
-        async with self._pool_lock:
-            for conn in self._pool:
-                conn.close()
-            self._pool.clear()
+        await self._pool.close()
 
     async def __aenter__(self):
         return self
@@ -139,18 +165,17 @@ class AsyncConnection(BaseConnection):
     async def __aexit__(self):
         await self.close()
 
-    @asynccontextmanager
     async def _get_conn(self):
-        conn = await self._acquire()
-        try:
-            yield conn
-        finally:
-            await self._release(conn)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, _Conn.connect, self.dsn.encode('utf-8'))
+
+    async def _close_conn(self, conn):
+        conn.close()
 
     @asynccontextmanager
     async def _get_query(self, loop, sql: str, params):
         sql = sql.encode('utf-8')
-        async with self._get_conn() as conn:
+        async with self._pool.get() as conn:
             query = Query(await loop.run_in_executor(self._executor, conn.new_query, sql))
             await loop.run_in_executor(self._executor, query.add_params, params)
             yield query
