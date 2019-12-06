@@ -1,20 +1,15 @@
 import asyncio
 import concurrent
-import functools
-import json
 import os
-import struct
-import threading
-import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 from typing import Iterable
 from typing import Tuple
 
 from slonik import rust
-from slonik._native import ffi
 from slonik._native import lib
 
+from .pool import AsyncPool
 from .query import _Query
 from .query import Query
 
@@ -103,52 +98,6 @@ class Connection(BaseConnection):
         return value
 
 
-class AsyncPool:
-    def __init__(self, ctor, dtor=None, max_instances=4):
-        assert max_instances > 0
-        self.max_instances = max_instances
-        self.ctor = ctor
-        self.dtor = dtor
-        self._pool = set()
-        self._free = set()
-        self._cond = asyncio.Condition()
-
-    async def _acquire(self):
-        async with self._cond:
-            while True:
-                if self._free:
-                    # Reuse a free instance
-                    return self._free.pop()
-                elif len(self._pool) < self.max_instances:
-                    # Create a new instance
-                    obj = await self.ctor()
-                    self._pool.add(obj)
-                    return obj
-                else:
-                    # Wait for an instance to be free
-                    await self._cond.wait()
-
-    async def _release(self, obj):
-        async with self._cond:
-            self._free.add(obj)
-            self._cond.notify()
-
-    @asynccontextmanager
-    async def get(self):
-        obj = await self._acquire()
-        try:
-            yield obj
-        finally:
-            await self._release(obj)
-
-    async def close(self):
-        async with self._cond:
-            pool, self._pool = self._pool, set()
-        if self.dtor is not None:
-            for obj in pool:
-                await self.dtor(obj)
-
-
 class AsyncConnection(BaseConnection):
     def __init__(self, dsn):
         super().__init__(dsn)
@@ -166,8 +115,13 @@ class AsyncConnection(BaseConnection):
         await self.close()
 
     async def _get_conn(self):
+        # Create a new connection for the pool
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, _Conn.connect, self.dsn.encode('utf-8'))
+        return await loop.run_in_executor(
+            self._executor,
+            _Conn.connect,
+            self.dsn.encode('utf-8'),
+        )
 
     async def _close_conn(self, conn):
         conn.close()
@@ -176,8 +130,16 @@ class AsyncConnection(BaseConnection):
     async def _get_query(self, loop, sql: str, params):
         sql = sql.encode('utf-8')
         async with self._pool.get() as conn:
-            query = Query(await loop.run_in_executor(self._executor, conn.new_query, sql))
-            await loop.run_in_executor(self._executor, query.add_params, params)
+            query = Query(await loop.run_in_executor(
+                self._executor,
+                conn.new_query,
+                sql,
+            ))
+            await loop.run_in_executor(
+                self._executor,
+                query.add_params,
+                params,
+            )
             yield query
 
     async def execute(self, sql: str, *args):
@@ -188,10 +150,18 @@ class AsyncConnection(BaseConnection):
     async def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
         loop = asyncio.get_running_loop()
         async with self._get_query(loop, sql, args) as query:
-            rows = await loop.run_in_executor(self._executor, query.execute_result)
+            rows = await loop.run_in_executor(
+                self._executor,
+                query.execute_result,
+            )
             try:
                 while True:
-                    row = await loop.run_in_executor(self._executor, next, rows, None)
+                    row = await loop.run_in_executor(
+                        self._executor,
+                        next,
+                        rows,
+                        None,
+                    )
                     if row is None:
                         break
                     yield row
