@@ -26,7 +26,7 @@ setup(
     setup_requires=['milksnake'],
     install_requires=['milksnake'],
     extras_require={
-        'tests': ['pytest'],
+        'tests': ['pytest', 'pytest-asyncio'],
     },
     milksnake_tasks=[
         build_native
