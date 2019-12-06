@@ -1,8 +1,10 @@
 import asyncio
 import concurrent
+import functools
 import json
 import os
 import struct
+import threading
 import uuid
 from typing import Any
 from typing import Iterable
@@ -31,10 +33,9 @@ class _Conn(rust.RustObject):
         return _Query._from_objptr(query)
 
 
-class Connection:
+class BaseConnection:
     def __init__(self, dsn: str):
         self.dsn = dsn
-        self.__conn = None
 
     @classmethod
     def from_env(cls, pghost: str = '', pgport: str = '', pguser: str = '',
@@ -52,6 +53,15 @@ class Connection:
             f'/{pgdatabase}?{pgoptions}'
         )
         return cls(dsn)
+
+    def close(self):
+        raise NotImplementedError
+
+
+class Connection(BaseConnection):
+    def __init__(self, dsn: str):
+        super().__init__(dsn)
+        self.__conn = None
 
     @property
     def _conn(self):
@@ -92,49 +102,59 @@ class Connection:
         return value
 
 
-class ConnectionPool:
+class AsyncConnection(BaseConnection):
     def __init__(self, dsn):
-        self.dsn = dsn
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-        # Each thread will then instanciate each own _Conn object on demand
-        self.connection = Connection(self.dsn)
+        super().__init__(dsn)
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self._pool = set()
+        self._pool_lock = threading.Lock()
+        self._local = threading.local()
 
-    @classmethod
-    def from_env(cls, pghost: str = '', pgport: str = '', pguser: str = '',
-                 pgpassword: str = '', pgdatabase: str = '',
-                 pgoptions: str = ''):
-        pghost = pghost or os.environ.get('PGHOST', 'localhost')
-        pgport = pgport or os.environ.get('PGPORT', '5432')
-        pguser = pguser or os.environ.get('PGUSER', 'postgres')
-        pgpassword = pgpassword or os.environ.get('PGPASSWORD', 'postgres')
-        pgdatabase = pgdatabase or os.environ.get('PGDATABASE', 'postgres')
-        pgoptions = pgoptions or os.environ.get('PGOPTIONS', '')
-
-        dsn = (
-            f'postgresql://{pguser}:{pgpassword}@{pghost}:{pgport}'
-            f'/{pgdatabase}?{pgoptions}'
-        )
-        return cls(dsn)
+    @property
+    def _conn(self):
+        conn = getattr(self._local, 'conn', None)
+        if conn is None:
+            conn = self._local.conn = Connection(self.dsn)
+            with self._pool_lock:
+                self._pool.add(conn)
+        return conn
 
     def close(self):
-        #self.conn.close()
-        self.executor.shutdown()
+        self._executor.shutdown()
+        with self._pool_lock:
+            pool, self._pool = self._pool, None
+        for conn in pool:
+            conn.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self):
+        self.close()
 
     def _run(self, method, args, kwargs):
-        return method(*args, **kwargs)
+        return method(self._conn, *args, **kwargs)
 
-    async def _async_run(self, method, args, kwargs):
+    async def _async_run(self, method, *args, **kwargs):
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self.executor, self._run, method, args, kwargs)
+        return await loop.run_in_executor(
+            self._executor,
+            self._run,
+            method,
+            args,
+            kwargs,
+        )
 
-    async def execute(self, *args, **kwargs):
-        return await self._async_run(self.connection.execute, args, kwargs)
+    async def execute(self, sql: str, *args):
+        await self._async_run(Connection.execute, sql, *args)
 
-    async def query(self, *args, **kwargs):
-        return await self._async_run(self.connection.query, args, kwargs)
+    async def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
+        rows = await self._async_run(Connection.query, sql, *args)
+        for row in rows:
+            yield row
 
-    async def get_one(self, *args, **kwargs):
-        return await self._async_run(self.connection.get_one, args, kwargs)
+    async def get_one(self, sql: str, *args) -> Tuple[Any]:
+        return await self._async_run(Connection.get_one, sql, *args)
 
-    async def get_value(self, *args, **kwargs):
-        return await self._async_run(self.connection.get_value, args, kwargs)
+    async def get_value(self, sql: str, *args) -> Any:
+        return await self._async_run(Connection.get_value, sql, *args)
