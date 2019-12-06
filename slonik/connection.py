@@ -6,6 +6,7 @@ import os
 import struct
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 from typing import Iterable
 from typing import Tuple
@@ -107,54 +108,75 @@ class AsyncConnection(BaseConnection):
         super().__init__(dsn)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self._pool = set()
-        self._pool_lock = threading.Lock()
-        self._local = threading.local()
+        self._pool_lock = asyncio.Lock()
 
-    @property
-    def _conn(self):
-        conn = getattr(self._local, 'conn', None)
-        if conn is None:
-            conn = self._local.conn = Connection(self.dsn)
-            with self._pool_lock:
-                self._pool.add(conn)
-        return conn
+    async def _acquire(self):
+        # Should only be called in the main thread
+        async with self._pool_lock:
+            # should wait for a free conn if 4 already exist
+            if self._pool:
+                conn = self._pool.pop()
+            else:
+                loop = asyncio.get_running_loop()
+                conn = await loop.run_in_executor(self._executor, _Conn.connect, self.dsn.encode('utf-8'))
+            return conn
 
-    def close(self):
+    async def _release(self, conn):
+        # Should only be called in the main thread
+        async with self._pool_lock:
+            self._pool.add(conn)
+
+    async def close(self):
         self._executor.shutdown()
-        with self._pool_lock:
-            pool, self._pool = self._pool, None
-        for conn in pool:
-            conn.close()
+        async with self._pool_lock:
+            for conn in self._pool:
+                conn.close()
+            self._pool.clear()
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self):
-        self.close()
+        await self.close()
 
-    def _run(self, method, args, kwargs):
-        return method(self._conn, *args, **kwargs)
+    @asynccontextmanager
+    async def _get_conn(self):
+        conn = await self._acquire()
+        try:
+            yield conn
+        finally:
+            await self._release(conn)
 
-    async def _async_run(self, method, *args, **kwargs):
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._executor,
-            self._run,
-            method,
-            args,
-            kwargs,
-        )
+    @asynccontextmanager
+    async def _get_query(self, loop, sql: str, params):
+        sql = sql.encode('utf-8')
+        async with self._get_conn() as conn:
+            query = Query(await loop.run_in_executor(self._executor, conn.new_query, sql))
+            await loop.run_in_executor(self._executor, query.add_params, params)
+            yield query
 
     async def execute(self, sql: str, *args):
-        await self._async_run(Connection.execute, sql, *args)
+        loop = asyncio.get_running_loop()
+        async with self._get_query(loop, sql, args) as query:
+            await loop.run_in_executor(self._executor, query.execute)
 
     async def query(self, sql: str, *args) -> Iterable[Tuple[Any]]:
-        rows = await self._async_run(Connection.query, sql, *args)
-        for row in rows:
-            yield row
+        loop = asyncio.get_running_loop()
+        async with self._get_query(loop, sql, args) as query:
+            rows = await loop.run_in_executor(self._executor, query.execute_result)
+            try:
+                while True:
+                    row = await loop.run_in_executor(self._executor, next, rows, None)
+                    if row is None:
+                        break
+                    yield row
+            except GeneratorExit:
+                pass
 
     async def get_one(self, sql: str, *args) -> Tuple[Any]:
-        return await self._async_run(Connection.get_one, sql, *args)
+        it = self.query(sql, *args)
+        return await it.__anext__()
 
     async def get_value(self, sql: str, *args) -> Any:
-        return await self._async_run(Connection.get_value, sql, *args)
+        value, = await self.get_one(sql, *args)
+        return value

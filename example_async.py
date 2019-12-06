@@ -16,12 +16,22 @@ async def main():
     print(time.time() - start)
     print(values)
 
-    #for row in await conn.query("SELECT *, pg_sleep(1) FROM generate_series(1, 10)"):
-    #    print(row)
-    async for row in conn.query("SELECT *, pg_sleep(1) FROM generate_series(1, 10)"):
-        print(row)
+    async def generate(n):
+        async for row in conn.query("SELECT *, pg_sleep(1) FROM generate_series(1, $1)", n):
+            print(row)
+    start = time.time()
+    values = await asyncio.gather(
+        generate(3),
+        generate(3),
+        generate(2),
+    )
+    print(time.time() - start)
 
-    conn.close()
+    start = time.time()
+    await conn.execute('SELECT 1, pg_sleep(1)')
+    print(time.time() - start)
+
+    await conn.close()
 
 
 asyncio.run(main())
